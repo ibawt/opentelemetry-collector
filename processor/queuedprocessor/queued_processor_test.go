@@ -17,17 +17,21 @@ package queuedprocessor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	tracepb "github.com/census-instrumentation/opencensus-proto/gen-go/trace/v1"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opencensus.io/stats/view"
 
 	"github.com/open-telemetry/opentelemetry-collector/consumer"
 	"github.com/open-telemetry/opentelemetry-collector/consumer/consumerdata"
 	"github.com/open-telemetry/opentelemetry-collector/consumer/consumererror"
+	"github.com/open-telemetry/opentelemetry-collector/internal/collector/telemetry"
 	"github.com/open-telemetry/opentelemetry-collector/processor"
 )
 
@@ -82,12 +86,24 @@ func (c *waitGroupTraceConsumer) GetCapabilities() processor.Capabilities {
 	return processor.Capabilities{MutatesConsumedData: false}
 }
 
+func findViewNamed(views []*view.View, name string) (*view.View, error) {
+	for _, v := range views {
+		if v.Name == name {
+			return v, nil
+		}
+	}
+	return nil, fmt.Errorf("view %s not found", name)
+}
+
 func TestQueueProcessorHappyPath(t *testing.T) {
 	mockProc := newMockConcurrentSpanProcessor()
 	qp := NewQueuedSpanProcessor(mockProc)
 	goFn := func(td consumerdata.TraceData) {
 		qp.ConsumeTraceData(context.Background(), td)
 	}
+	views := processor.MetricViews(telemetry.Detailed)
+	view.Register(views...)
+	defer view.Unregister(views...)
 
 	spans := []*tracepb.Span{{}}
 	wantBatches := 10
@@ -108,6 +124,18 @@ func TestQueueProcessorHappyPath(t *testing.T) {
 
 	require.Equal(t, wantBatches, int(mockProc.batchCount), "Incorrect batches count")
 	require.Equal(t, wantSpans, int(mockProc.spanCount), "Incorrect batches spans")
+
+	droppedView, err := findViewNamed(views, processor.StatDroppedSpanCount.Name())
+	require.NoError(t, err)
+
+	data, err := view.RetrieveData(droppedView.Name)
+	require.NoError(t, err)
+	require.Len(t, data, 1)
+	assert.Equal(t, 0.0, data[0].Data.(*view.SumData).Value)
+
+	data, err = view.RetrieveData("batches_dropped")
+	require.NoError(t, err)
+	assert.Equal(t, 0.0, data[0].Data.(*view.SumData).Value)
 }
 
 type mockConcurrentSpanProcessor struct {

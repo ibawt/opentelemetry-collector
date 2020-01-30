@@ -133,6 +133,9 @@ func (sp *queuedSpanProcessor) ConsumeTraceData(ctx context.Context, td consumer
 	addedToQueue := sp.queue.Produce(item)
 	if !addedToQueue {
 		sp.onItemDropped(item, statsTags)
+	} else {
+		stats.RecordWithTags(context.Background(), statsTags, processor.StatDroppedSpanCount.M(int64(0)))
+		stats.RecordWithTags(context.Background(), statsTags, processor.StatBatchesDroppedCount.M(int64(0)))
 	}
 	return nil
 }
@@ -149,6 +152,7 @@ func (sp *queuedSpanProcessor) Shutdown() error {
 
 func (sp *queuedSpanProcessor) processItemFromQueue(item *queueItem) {
 	startTime := time.Now()
+	statsTags := processor.StatsTagsForBatch(sp.name, processor.ServiceNameForNode(item.td.Node), item.td.SourceFormat)
 	err := sp.sender.ConsumeTraceData(item.ctx, item.td)
 	if err == nil {
 		// Record latency metrics and return
@@ -161,11 +165,14 @@ func (sp *queuedSpanProcessor) processItemFromQueue(item *queueItem) {
 			statSendLatencyMs.M(sendLatencyMs),
 			statInQueueLatencyMs.M(inQueueLatencyMs))
 
+		stats.RecordWithTags(
+			context.Background(),
+			statsTags,
+			processor.StatBadBatchDroppedSpanCount.M(int64(0)))
 		return
 	}
 
 	// There was an error
-	statsTags := processor.StatsTagsForBatch(sp.name, processor.ServiceNameForNode(item.td.Node), item.td.SourceFormat)
 
 	// Immediately drop data on permanent errors. In this context permanent
 	// errors indicate some kind of bad data.
@@ -223,6 +230,7 @@ func (sp *queuedSpanProcessor) processItemFromQueue(item *queueItem) {
 func (sp *queuedSpanProcessor) onItemDropped(item *queueItem, statsTags []tag.Mutator) {
 	numSpans := len(item.td.Spans)
 	stats.RecordWithTags(context.Background(), statsTags, processor.StatDroppedSpanCount.M(int64(numSpans)))
+	stats.RecordWithTags(context.Background(), statsTags, processor.StatBatchesDroppedCount.M(int64(1)))
 
 	sp.logger.Warn("Span batch dropped",
 		zap.String("processor", sp.name),
