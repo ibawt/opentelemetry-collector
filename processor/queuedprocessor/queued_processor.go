@@ -61,6 +61,9 @@ func NewQueuedSpanProcessor(sender consumer.TraceConsumer, opts ...Option) proce
 	options := Options.apply(opts...)
 	sp := newQueuedSpanProcessor(sender, options)
 
+	stats.Record(context.Background(), processor.StatBadBatchDroppedSpanCount.M(int64(0)))
+	stats.Record(context.Background(), processor.StatDroppedSpanCount.M(int64(0)))
+
 	sp.queue.StartConsumers(sp.numWorkers, func(item interface{}) {
 		value := item.(*queueItem)
 		sp.processItemFromQueue(value)
@@ -106,6 +109,7 @@ func newQueuedSpanProcessor(sender consumer.TraceConsumer, opts options) *queued
 }
 
 // Start is invoked during service startup.
+
 func (sp *queuedSpanProcessor) Start(host component.Host) error {
 	return nil
 }
@@ -134,7 +138,6 @@ func (sp *queuedSpanProcessor) ConsumeTraceData(ctx context.Context, td consumer
 	if !addedToQueue {
 		sp.onItemDropped(item, statsTags)
 	} else {
-		stats.RecordWithTags(context.Background(), statsTags, processor.StatDroppedSpanCount.M(int64(0)))
 		stats.RecordWithTags(context.Background(), statsTags, processor.StatBatchesDroppedCount.M(int64(0)))
 	}
 	return nil
@@ -158,17 +161,12 @@ func (sp *queuedSpanProcessor) processItemFromQueue(item *queueItem) {
 		// Record latency metrics and return
 		sendLatencyMs := int64(time.Since(startTime) / time.Millisecond)
 		inQueueLatencyMs := int64(time.Since(item.queuedTime) / time.Millisecond)
-		statsTags := processor.StatsTagsForBatch(sp.name, processor.ServiceNameForNode(item.td.Node), item.td.SourceFormat)
 		stats.RecordWithTags(context.Background(),
 			statsTags,
 			statSuccessSendOps.M(1),
 			statSendLatencyMs.M(sendLatencyMs),
 			statInQueueLatencyMs.M(inQueueLatencyMs))
 
-		stats.RecordWithTags(
-			context.Background(),
-			statsTags,
-			processor.StatBadBatchDroppedSpanCount.M(int64(0)))
 		return
 	}
 
